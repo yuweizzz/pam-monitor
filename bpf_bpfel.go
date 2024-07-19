@@ -12,6 +12,18 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type bpfDestPair struct {
+	IpDest   uint32
+	PortDest uint16
+	_        [2]byte
+}
+
+type bpfSrcPair struct {
+	IpSrc   uint32
+	PortSrc uint16
+	_       [2]byte
+}
+
 // loadBpf returns the embedded CollectionSpec for bpf.
 func loadBpf() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_BpfBytes)
@@ -60,7 +72,7 @@ type bpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
-	XdpStatsMap *ebpf.MapSpec `ebpf:"xdp_stats_map"`
+	XdpRuleMap *ebpf.MapSpec `ebpf:"xdp_rule_map"`
 }
 
 // bpfObjects contains all objects after they have been loaded into the kernel.
@@ -82,12 +94,12 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
-	XdpStatsMap *ebpf.Map `ebpf:"xdp_stats_map"`
+	XdpRuleMap *ebpf.Map `ebpf:"xdp_rule_map"`
 }
 
 func (m *bpfMaps) Close() error {
 	return _BpfClose(
-		m.XdpStatsMap,
+		m.XdpRuleMap,
 	)
 }
 

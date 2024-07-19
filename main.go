@@ -1,18 +1,10 @@
-// This program demonstrates attaching an eBPF program to a network interface
-// with XDP (eXpress Data Path). The program parses the IPv4 source address
-// from packets and writes the packet count by IP to an LRU hash map.
-// The userspace program (Go code in this file) prints the contents
-// of the map to stdout every second.
-// It is possible to modify the XDP program to drop or redirect packets
-// as well -- give it a try!
-// This example depends on bpf_link, available in Linux kernel version 5.7 or newer.
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
-	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -35,7 +27,6 @@ func main() {
 		log.Fatalf("lookup network iface %q: %s", ifaceName, err)
 	}
 
-	// Load pre-compiled programs into the kernel.
 	objs := bpfObjects{}
 	if err := loadBpfObjects(&objs, nil); err != nil {
 		log.Fatalf("loading objects: %s", err)
@@ -55,11 +46,10 @@ func main() {
 	log.Printf("Attached XDP program to iface %q (index %d)", iface.Name, iface.Index)
 	log.Printf("Press Ctrl-C to exit and remove the program")
 
-	// Print the contents of the BPF hash map (source IP address -> packet count).
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		s, err := formatMapContents(objs.XdpStatsMap)
+		s, err := formatMapContents(objs.XdpRuleMap)
 		if err != nil {
 			log.Printf("Error reading map: %s", err)
 			continue
@@ -70,15 +60,29 @@ func main() {
 
 func formatMapContents(m *ebpf.Map) (string, error) {
 	var (
-		sb  strings.Builder
-		key netip.Addr
-		val uint32
+		sb       strings.Builder
+		src_pair struct {
+			IpSrc   uint32
+			PortSrc uint16
+			_       [2]byte
+		}
+		dest_pair struct {
+			IpDest   uint32
+			PortDest uint16
+			_        [2]byte
+		}
 	)
 	iter := m.Iterate()
-	for iter.Next(&key, &val) {
-		sourceIP := key // IPv4 source address in network byte order.
-		packetCount := val
-		sb.WriteString(fmt.Sprintf("\t%s => %d\n", sourceIP, packetCount))
+	for iter.Next(&src_pair, &dest_pair) {
+		sourceIP := src_pair.IpSrc
+		sourcePort := src_pair.PortSrc
+		destIP := dest_pair.IpDest
+		destPort := dest_pair.PortDest
+		sip := make(net.IP, 4)
+		binary.LittleEndian.PutUint32(sip, sourceIP)
+		dip := make(net.IP, 4)
+		binary.LittleEndian.PutUint32(dip, destIP)
+		sb.WriteString(fmt.Sprintf("\t%s:%d => %s:%d\n", sip, sourcePort, dip, destPort))
 	}
 	return sb.String(), iter.Err()
 }
