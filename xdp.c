@@ -3,6 +3,7 @@
 #include "bpf_endian.h"
 #include "common.h"
 #include "linux/tcp.h"
+#include "linux/udp.h"
 #include "linux/in.h"
 
 char __license[] SEC("license") = "Dual MIT/GPL";
@@ -30,10 +31,12 @@ struct {
 Attempt to parse the IPv4 source address from the packet.
 Returns 0 if there is no IPv4 header field; otherwise returns non-zero.
 */
-static __always_inline int parse_ip_and_port(struct xdp_md *ctx,
-											 struct src_pair *src,
-											 struct dest_pair *dest)
-{
+static __always_inline int parse_ip_and_port
+(
+	struct xdp_md *ctx, 
+	struct src_pair *src,
+	struct dest_pair *dest
+){
 	void *data_end = (void *)(long)ctx->data_end;
 	void *data     = (void *)(long)ctx->data;
 
@@ -64,6 +67,13 @@ static __always_inline int parse_ip_and_port(struct xdp_md *ctx,
 		}
 		src->port_src = (__u16)bpf_ntohs(tcp->source);
 		dest->port_dest = (__u16)bpf_ntohs(tcp->dest);
+	} else if (ip->protocol == IPPROTO_UDP) {
+		struct udphdr *udp = (void *)(ip + 1);
+		if ((void *)(udp + 1) > data_end) {
+			return 0;
+		}
+		src->port_src = (__u16)bpf_ntohs(udp->source);
+		dest->port_dest = (__u16)bpf_ntohs(udp->dest);
 	}
 
 	return 1;
