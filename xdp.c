@@ -175,9 +175,11 @@ int uretprobe_pam_get_authtok(struct pt_regs *ctx)
 	u64 username_addr = 0;
 	bpf_probe_read(&username_addr, sizeof(username_addr), &phandle->user);
 
+	bpf_map_delete_elem(&pam_handle_map, &pid);
 	struct event event_i;
 	event_i.pid = pid;
-	event_i.result = 100;
+	// mark as PAM_AUTH_ERR first
+	event_i.result = 7;
 	bpf_probe_read(&event_i.password, sizeof(event_i.password), (void *)password_addr);
 	bpf_probe_read(&event_i.username, sizeof(event_i.username), (void *)username_addr);
 	bpf_get_current_comm(&event_i.comm, sizeof(event_i.comm));
@@ -198,5 +200,6 @@ int uretprobe_pam_authenticate(struct pt_regs *ctx)
 	bpf_probe_read(&event_i, sizeof(event_i), event_ptr);
 	event_i.result = PT_REGS_RC(ctx);
 	bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event_i, sizeof(event_i));
+	bpf_map_delete_elem(&events_map, &pid);
 	return 0;
 };
