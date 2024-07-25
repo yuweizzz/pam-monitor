@@ -12,24 +12,13 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type bpfDestPair struct {
-	IpDest   uint32
-	PortDest uint16
-	_        [2]byte
-}
-
 type bpfEvent struct {
 	Pid      uint32
 	Result   uint32
+	Rhost    [16]uint8
 	Comm     [16]uint8
 	Username [80]uint8
 	Password [80]uint8
-}
-
-type bpfSrcPair struct {
-	IpSrc   uint32
-	PortSrc uint16
-	_       [2]byte
 }
 
 // loadBpf returns the embedded CollectionSpec for bpf.
@@ -76,17 +65,17 @@ type bpfProgramSpecs struct {
 	UprobePamGetAuthtok      *ebpf.ProgramSpec `ebpf:"uprobe_pam_get_authtok"`
 	UretprobePamAuthenticate *ebpf.ProgramSpec `ebpf:"uretprobe_pam_authenticate"`
 	UretprobePamGetAuthtok   *ebpf.ProgramSpec `ebpf:"uretprobe_pam_get_authtok"`
-	XdpProgFunc              *ebpf.ProgramSpec `ebpf:"xdp_prog_func"`
+	XdpProgMain              *ebpf.ProgramSpec `ebpf:"xdp_prog_main"`
 }
 
 // bpfMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
-	Events       *ebpf.MapSpec `ebpf:"events"`
-	EventsMap    *ebpf.MapSpec `ebpf:"events_map"`
-	PamHandleMap *ebpf.MapSpec `ebpf:"pam_handle_map"`
-	XdpRuleMap   *ebpf.MapSpec `ebpf:"xdp_rule_map"`
+	Events         *ebpf.MapSpec `ebpf:"events"`
+	EventsMap      *ebpf.MapSpec `ebpf:"events_map"`
+	PamHandleMap   *ebpf.MapSpec `ebpf:"pam_handle_map"`
+	XdpPacketCount *ebpf.MapSpec `ebpf:"xdp_packet_count"`
 }
 
 // bpfObjects contains all objects after they have been loaded into the kernel.
@@ -108,10 +97,10 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
-	Events       *ebpf.Map `ebpf:"events"`
-	EventsMap    *ebpf.Map `ebpf:"events_map"`
-	PamHandleMap *ebpf.Map `ebpf:"pam_handle_map"`
-	XdpRuleMap   *ebpf.Map `ebpf:"xdp_rule_map"`
+	Events         *ebpf.Map `ebpf:"events"`
+	EventsMap      *ebpf.Map `ebpf:"events_map"`
+	PamHandleMap   *ebpf.Map `ebpf:"pam_handle_map"`
+	XdpPacketCount *ebpf.Map `ebpf:"xdp_packet_count"`
 }
 
 func (m *bpfMaps) Close() error {
@@ -119,7 +108,7 @@ func (m *bpfMaps) Close() error {
 		m.Events,
 		m.EventsMap,
 		m.PamHandleMap,
-		m.XdpRuleMap,
+		m.XdpPacketCount,
 	)
 }
 
@@ -130,7 +119,7 @@ type bpfPrograms struct {
 	UprobePamGetAuthtok      *ebpf.Program `ebpf:"uprobe_pam_get_authtok"`
 	UretprobePamAuthenticate *ebpf.Program `ebpf:"uretprobe_pam_authenticate"`
 	UretprobePamGetAuthtok   *ebpf.Program `ebpf:"uretprobe_pam_get_authtok"`
-	XdpProgFunc              *ebpf.Program `ebpf:"xdp_prog_func"`
+	XdpProgMain              *ebpf.Program `ebpf:"xdp_prog_main"`
 }
 
 func (p *bpfPrograms) Close() error {
@@ -138,7 +127,7 @@ func (p *bpfPrograms) Close() error {
 		p.UprobePamGetAuthtok,
 		p.UretprobePamAuthenticate,
 		p.UretprobePamGetAuthtok,
-		p.XdpProgFunc,
+		p.XdpProgMain,
 	)
 }
 

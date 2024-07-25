@@ -1,19 +1,26 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/cilium/ebpf/perf"
+	"golang.org/x/sys/unix"
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go bpf xdp.c -- -I./headers
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -type event bpf xdp.c -- -I./headers
 
 func main() {
 	if len(os.Args) < 2 {
@@ -24,18 +31,18 @@ func main() {
 	ifaceName := os.Args[1]
 	iface, err := net.InterfaceByName(ifaceName)
 	if err != nil {
-		log.Fatalf("lookup network iface %q: %s", ifaceName, err)
+		log.Fatalf("Lookup network iface %q: %s", ifaceName, err)
 	}
 
 	objs := bpfObjects{}
 	if err := loadBpfObjects(&objs, nil); err != nil {
-		log.Fatalf("loading objects: %s", err)
+		log.Fatalf("Loading objects: %s", err)
 	}
 	defer objs.Close()
 
-	// Attach the program.
+	// Attach the XDP program.
 	l, err := link.AttachXDP(link.XDPOptions{
-		Program:   objs.XdpProgFunc,
+		Program:   objs.XdpProgMain,
 		Interface: iface.Index,
 	})
 	if err != nil {
@@ -44,45 +51,103 @@ func main() {
 	defer l.Close()
 
 	log.Printf("Attached XDP program to iface %q (index %d)", iface.Name, iface.Index)
-	log.Printf("Press Ctrl-C to exit and remove the program")
 
-	ticker := time.NewTicker(1 * time.Second)
+	// Uprobe PAM lib.
+	ex, err := link.OpenExecutable("/lib/x86_64-linux-gnu/libpam.so.0")
+	if err != nil {
+		log.Fatalf("Opening executable: %s", err)
+	}
+
+	up, err := ex.Uprobe("pam_get_authtok", objs.UprobePamGetAuthtok, nil)
+	if err != nil {
+		log.Fatalf("Creating uprobe for pam_get_authtok: %s", err)
+	}
+	defer up.Close()
+
+	urp, err := ex.Uretprobe("pam_get_authtok", objs.UretprobePamGetAuthtok, nil)
+	if err != nil {
+		log.Fatalf("Creating uretprobe for pam_get_authtok: %s", err)
+	}
+	defer urp.Close()
+
+	urpAuth, err := ex.Uretprobe("pam_authenticate", objs.UretprobePamAuthenticate, nil)
+	if err != nil {
+		log.Fatalf("Creating uretprobe for pam_authenticate: %s", err)
+	}
+	defer urpAuth.Close()
+
+	rd, err := perf.NewReader(objs.Events, os.Getpagesize())
+	if err != nil {
+		log.Fatalf("Creating perf event reader: %s", err)
+	}
+	defer rd.Close()
+
+	// Run stopper.
+	log.Printf("Press Ctrl-C to exit and remove the program")
+	stopper := make(chan os.Signal, 1)
+	signal.Notify(stopper, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		// Wait for a signal and close the perf reader,
+		// which will interrupt rd.Read() and make the program exit.
+		<-stopper
+		log.Println("Received signal, exiting program..")
+
+		if err := rd.Close(); err != nil {
+			log.Fatalf("Closing perf event reader: %s", err)
+		}
+	}()
+
+	// Print xdp_packet_count map
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		s, err := formatMapContents(objs.XdpRuleMap)
+	go func() {
+		for range ticker.C {
+			s, err := formatMapContents(objs.XdpPacketCount)
+			if err != nil {
+				log.Printf("Error reading map: %s", err)
+				continue
+			}
+			log.Printf("%s\n", s)
+		}
+	}()
+
+	var event bpfEvent
+	for {
+		record, err := rd.Read()
 		if err != nil {
-			log.Printf("Error reading map: %s", err)
+			if errors.Is(err, perf.ErrClosed) {
+				return
+			}
+			log.Printf("Reading from perf event reader: %s", err)
 			continue
 		}
-		log.Printf("Map contents:\n%s", s)
+
+		if record.LostSamples != 0 {
+			log.Printf("Perf event ring buffer full, dropped %d samples", record.LostSamples)
+			continue
+		}
+
+		// Parse the perf event entry into a bpfEvent structure.
+		if err := binary.Read(bytes.NewBuffer(record.RawSample), binary.LittleEndian, &event); err != nil {
+			log.Printf("Parsing perf event: %s", err)
+			continue
+		}
+
+		log.Printf("Perf event value: %d,%s,%s,%s,%d", event.Pid, unix.ByteSliceToString(event.Comm[:]), unix.ByteSliceToString(event.Username[:]), unix.ByteSliceToString(event.Rhost[:]), event.Result)
 	}
 }
 
 func formatMapContents(m *ebpf.Map) (string, error) {
 	var (
-		sb       strings.Builder
-		src_pair struct {
-			IpSrc   uint32
-			PortSrc uint16
-			_       [2]byte
-		}
-		dest_pair struct {
-			IpDest   uint32
-			PortDest uint16
-			_        [2]byte
-		}
+		sb  strings.Builder
+		key netip.Addr
+		val uint32
 	)
 	iter := m.Iterate()
-	for iter.Next(&src_pair, &dest_pair) {
-		sourceIP := src_pair.IpSrc
-		sourcePort := src_pair.PortSrc
-		destIP := dest_pair.IpDest
-		destPort := dest_pair.PortDest
-		sip := make(net.IP, 4)
-		binary.LittleEndian.PutUint32(sip, sourceIP)
-		dip := make(net.IP, 4)
-		binary.LittleEndian.PutUint32(dip, destIP)
-		sb.WriteString(fmt.Sprintf("\t%s:%d => %s:%d\n", sip, sourcePort, dip, destPort))
+	for iter.Next(&key, &val) {
+		sourceIP := key
+		packetCount := val
+		sb.WriteString(fmt.Sprintf("\t%s => %d\n", sourceIP, packetCount))
 	}
 	return sb.String(), iter.Err()
 }

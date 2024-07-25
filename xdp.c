@@ -7,37 +7,29 @@
 #include "linux/udp.h"
 #include "linux/in.h"
 
+#define MAX_MAP_ENTRIES 1024
+
 char __license[] SEC("license") = "Dual MIT/GPL";
 
-#define MAX_MAP_ENTRIES 32
-
-struct src_pair {
-    __u32 ip_src;
-    __u16 port_src;
-};
-
-struct dest_pair {
-    __u32 ip_dest;
-    __u16 port_dest;
-};
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_MAP_ENTRIES);
-    __type(key, struct src_pair);
-    __type(value, struct dest_pair);
-} xdp_rule_map SEC(".maps");
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, MAX_MAP_ENTRIES);
+	__type(key, u32);
+	__type(value, u32);
+} xdp_packet_count SEC(".maps");
 
-/*
-Attempt to parse the IPv4 source address from the packet.
-Returns 0 if there is no IPv4 header field; otherwise returns non-zero.
-*/
-static __always_inline int parse_ip_and_port
-(
-	struct xdp_md *ctx, 
-	struct src_pair *src,
-	struct dest_pair *dest
-){
+
+struct packet_info {
+	u32 ip_src;
+	u32 ip_dest;
+	u16 port_src;
+	u16 port_dest;
+};
+
+
+static __always_inline int parse_packet_info(struct xdp_md *ctx, struct packet_info *packet)
+{
 	void *data_end = (void *)(long)ctx->data_end;
 	void *data     = (void *)(long)ctx->data;
 
@@ -58,41 +50,48 @@ static __always_inline int parse_ip_and_port
 		return 0;
 	}
 
-	src->ip_src = (__u32)(ip->saddr);
-	dest->ip_dest = (__u32)(ip->daddr);
+	packet->ip_src = (__u32)(ip->saddr);
+	packet->ip_dest = (__u32)(ip->daddr);
 
 	if (ip->protocol == IPPROTO_TCP) {
 		struct tcphdr *tcp = (void *)(ip + 1);
 		if ((void *)(tcp + 1) > data_end) {
 			return 0;
 		}
-		src->port_src = (__u16)bpf_ntohs(tcp->source);
-		dest->port_dest = (__u16)bpf_ntohs(tcp->dest);
+		packet->port_src = (__u16)bpf_ntohs(tcp->source);
+		packet->port_dest = (__u16)bpf_ntohs(tcp->dest);
 	} else if (ip->protocol == IPPROTO_UDP) {
 		struct udphdr *udp = (void *)(ip + 1);
 		if ((void *)(udp + 1) > data_end) {
 			return 0;
 		}
-		src->port_src = (__u16)bpf_ntohs(udp->source);
-		dest->port_dest = (__u16)bpf_ntohs(udp->dest);
+		packet->port_src = (__u16)bpf_ntohs(udp->source);
+		packet->port_dest = (__u16)bpf_ntohs(udp->dest);
 	}
 
 	return 1;
 }
 
 SEC("xdp")
-int xdp_prog_func(struct xdp_md *ctx) {
-	struct src_pair src = {0,0};
-	struct dest_pair dest = {0,0};
-	if (!parse_ip_and_port(ctx, &src, &dest)) {
-		// Not an IPv4 packet, so don't count it.
+int xdp_prog_main(struct xdp_md *ctx) {
+	struct packet_info packet;
+	if (!parse_packet_info(ctx, &packet)) {
 		goto done;
 	}
 
-	bpf_map_update_elem(&xdp_rule_map, &src, &dest, BPF_ANY);
-
+	// update packet count
+	u32 ip = packet.ip_src;
+	u32 *pkt_count = bpf_map_lookup_elem(&xdp_packet_count, &ip);
+	if (!pkt_count) {
+		// not match and pass
+		goto done;
+	} else {
+		// match and drop
+		__sync_fetch_and_add(pkt_count, 1);
+	}
+	// drop packet
+	return XDP_DROP;
 done:
-	// Try changing this to XDP_DROP and see what happens!
 	return XDP_PASS;
 }
 
@@ -119,6 +118,7 @@ struct pam_handle {
 struct event {
 	u32 pid;
 	u32 result;
+	u8 rhost[16];
 	u8 comm[16];
 	u8 username[80];
 	u8 password[80];
@@ -174,6 +174,8 @@ int uretprobe_pam_get_authtok(struct pt_regs *ctx)
 	bpf_probe_read(&password_addr, sizeof(password_addr), &phandle->authtok);
 	u64 username_addr = 0;
 	bpf_probe_read(&username_addr, sizeof(username_addr), &phandle->user);
+	u64 rhost_addr = 0;
+	bpf_probe_read(&rhost_addr, sizeof(rhost_addr), &phandle->rhost);
 
 	bpf_map_delete_elem(&pam_handle_map, &pid);
 	struct event event_i;
@@ -182,6 +184,7 @@ int uretprobe_pam_get_authtok(struct pt_regs *ctx)
 	event_i.result = 7;
 	bpf_probe_read(&event_i.password, sizeof(event_i.password), (void *)password_addr);
 	bpf_probe_read(&event_i.username, sizeof(event_i.username), (void *)username_addr);
+	bpf_probe_read(&event_i.rhost, sizeof(event_i.rhost), (void *)rhost_addr);
 	bpf_get_current_comm(&event_i.comm, sizeof(event_i.comm));
 	bpf_map_update_elem(&events_map, &pid, &event_i, BPF_ANY);
 	return 0;
