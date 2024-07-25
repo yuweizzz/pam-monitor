@@ -22,6 +22,14 @@ import (
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -type event bpf xdp.c -- -I./headers
 
+type BlockRule struct {
+	Ip          netip.Addr
+	FailedCount int
+	StartTime   time.Time
+	UpdateTime  time.Time
+	Scale       time.Duration
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		log.Fatalf("Please specify a network interface")
@@ -111,6 +119,7 @@ func main() {
 		}
 	}()
 
+	BlockRlueMap := make(map[string]*BlockRule)
 	var event bpfEvent
 	for {
 		record, err := rd.Read()
@@ -132,8 +141,42 @@ func main() {
 			log.Printf("Parsing perf event: %s", err)
 			continue
 		}
-
-		log.Printf("Perf event value: %d,%s,%s,%s,%d", event.Pid, unix.ByteSliceToString(event.Comm[:]), unix.ByteSliceToString(event.Username[:]), unix.ByteSliceToString(event.Rhost[:]), event.Result)
+		ipStr := unix.ByteSliceToString(event.Rhost[:])
+		authResult := event.Result
+		if rule, ok := BlockRlueMap[ipStr]; ok {
+			if authResult > 0 {
+				rule.FailedCount += 1
+			}
+			if rule.FailedCount >= 3 {
+				ipAddr, err := netip.ParseAddr(ipStr)
+				if err != nil {
+					log.Printf("Parsing ip addr: %s", err)
+				}
+				err = objs.XdpPacketCount.Put(ipAddr, uint32(0))
+				if err != nil {
+					log.Printf("Put map %s", err)
+				}
+			}
+			log.Printf("%v", rule)
+		} else {
+			ipAddr, err := netip.ParseAddr(ipStr)
+			if err != nil {
+				log.Printf("Parsing ip addr: %s", err)
+			}
+			failedCount := 0
+			if authResult > 0 {
+				failedCount = 1
+			}
+			rule = &BlockRule{
+				Ip:          ipAddr,
+				FailedCount: failedCount,
+				StartTime:   time.Now(),
+				UpdateTime:  time.Now(),
+				Scale:       60 * time.Second,
+			}
+			BlockRlueMap[ipStr] = rule
+		}
+		log.Printf("Perf event value: %d,%s,%s,%s,%d", event.Pid, unix.ByteSliceToString(event.Comm[:]), unix.ByteSliceToString(event.Username[:]), ipStr, authResult)
 	}
 }
 
