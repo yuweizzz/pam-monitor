@@ -1,0 +1,4 @@
+NetIface = "enp0s3"
+MaxFailedCount = 3
+TimeUnit = 60
+ReportPeriod = 30

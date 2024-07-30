@@ -4,9 +4,14 @@ CFLAGS := "-O2 -g -Wall -Werror"
 CURDIR := $(shell pwd)
 HEADERS := $(CURDIR)/headers
 
-.PHONY: clean generate build
+GOFILE := $(shell find . -name "*.go" | xargs)
+
+.PHONY: clean lint generate build
 
 default: build
+
+lint:
+	gofmt -w $(GOFILE)
 
 clean:
 	find . -name "*.elf" -delete

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -23,23 +24,27 @@ import (
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -type event bpf xdp.c -- -I./headers
 
 type BlockRule struct {
-	Ip          netip.Addr
-	FailedCount int
-	StartTime   time.Time
-	UpdateTime  time.Time
-	Scale       time.Duration
+	Ip               netip.Addr
+	FailedCount      int
+	TotalFailedCount int
+	StartTime        time.Time
+	UpdateTime       time.Time
+	TimeUnit         time.Duration
+}
+
+var configFlag string
+
+func init() {
+	flag.StringVar(&configFlag, "c", "conf.toml", "config file")
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		log.Fatalf("Please specify a network interface")
-	}
+	flag.Parse()
+	cfg := ReadConfig(configFlag)
 
-	// Look up the network interface by name.
-	ifaceName := os.Args[1]
-	iface, err := net.InterfaceByName(ifaceName)
+	iface, err := net.InterfaceByName(cfg.NetIface)
 	if err != nil {
-		log.Fatalf("Lookup network iface %q: %s", ifaceName, err)
+		log.Fatalf("Lookup network iface %q: %s", iface, err)
 	}
 
 	objs := bpfObjects{}
@@ -106,7 +111,7 @@ func main() {
 	}()
 
 	// Print xdp_packet_count map
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(cfg.ReportPeriod)
 	defer ticker.Stop()
 	go func() {
 		for range ticker.C {
@@ -115,7 +120,20 @@ func main() {
 				log.Printf("Error reading map: %s", err)
 				continue
 			}
-			log.Printf("%s\n", s)
+			log.Printf("Report XDP Status: [%s]\n", s)
+		}
+	}()
+
+	// Delete xdp maps
+	unlockChannel := make(chan netip.Addr)
+	go func() {
+		for {
+			incoming := <-unlockChannel
+			err = objs.XdpPacketCount.Delete(incoming)
+			if err != nil {
+				log.Printf("Error puting xdp maps: %s", err)
+			}
+			log.Printf("Unlock: %s", incoming)
 		}
 	}()
 
@@ -141,42 +159,44 @@ func main() {
 			log.Printf("Parsing perf event: %s", err)
 			continue
 		}
+
+		// Put xdp maps
 		ipStr := unix.ByteSliceToString(event.Rhost[:])
+		ipAddr, err := netip.ParseAddr(ipStr)
+		if err != nil {
+			log.Printf("Parsing ip addr: %s", err)
+		}
 		authResult := event.Result
 		if rule, ok := BlockRlueMap[ipStr]; ok {
 			if authResult > 0 {
 				rule.FailedCount += 1
+				rule.UpdateTime = time.Now()
 			}
-			if rule.FailedCount >= 3 {
-				ipAddr, err := netip.ParseAddr(ipStr)
-				if err != nil {
-					log.Printf("Parsing ip addr: %s", err)
-				}
+			if rule.FailedCount >= cfg.MaxFailedCount {
 				err = objs.XdpPacketCount.Put(ipAddr, uint32(0))
 				if err != nil {
-					log.Printf("Put map %s", err)
+					log.Printf("Error puting xdp maps: %s", err)
 				}
+				log.Printf("Block: %s", ipAddr)
+				// wait for unlock
+				go rule.WaitUnlock(unlockChannel)
 			}
-			log.Printf("%v", rule)
 		} else {
-			ipAddr, err := netip.ParseAddr(ipStr)
-			if err != nil {
-				log.Printf("Parsing ip addr: %s", err)
-			}
 			failedCount := 0
 			if authResult > 0 {
 				failedCount = 1
 			}
 			rule = &BlockRule{
-				Ip:          ipAddr,
-				FailedCount: failedCount,
-				StartTime:   time.Now(),
-				UpdateTime:  time.Now(),
-				Scale:       60 * time.Second,
+				Ip:               ipAddr,
+				TotalFailedCount: 0,
+				FailedCount:      failedCount,
+				StartTime:        time.Now(),
+				UpdateTime:       time.Now(),
+				TimeUnit:         cfg.TimeUnit,
 			}
 			BlockRlueMap[ipStr] = rule
 		}
-		log.Printf("Perf event value: %d,%s,%s,%s,%d", event.Pid, unix.ByteSliceToString(event.Comm[:]), unix.ByteSliceToString(event.Username[:]), ipStr, authResult)
+		// log.Printf("Perf event value: %d,%s,%s,%s,%d", event.Pid, unix.ByteSliceToString(event.Comm[:]), unix.ByteSliceToString(event.Username[:]), ipStr, authResult)
 	}
 }
 
@@ -190,7 +210,27 @@ func formatMapContents(m *ebpf.Map) (string, error) {
 	for iter.Next(&key, &val) {
 		sourceIP := key
 		packetCount := val
-		sb.WriteString(fmt.Sprintf("\t%s => %d\n", sourceIP, packetCount))
+		sb.WriteString(fmt.Sprintf("\n\t{\"Ip\": \"%s\", \"Count\": %d},", sourceIP, packetCount))
+	}
+	if sb.Len() > 0 {
+		sb.WriteString("\n")
 	}
 	return sb.String(), iter.Err()
+}
+
+func (r *BlockRule) WaitUnlock(channel chan netip.Addr) {
+	scale := r.TotalFailedCount
+	if scale == 0 {
+		scale = 1
+	}
+	timeout := time.Duration(scale) * r.TimeUnit
+	log.Printf("Ip %s will Unlock in %s", r.Ip, r.UpdateTime.Add(timeout).Format("2006-01-02 15:04:05 MST"))
+	timer := time.NewTimer(timeout)
+	select {
+	case <-timer.C:
+		channel <- r.Ip
+	}
+	timer.Stop()
+	r.TotalFailedCount += r.FailedCount
+	r.FailedCount = 0
 }
