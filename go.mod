@@ -1,4 +1,4 @@
-module github.com/yuweizzz/wip
+module github.com/yuweizzz/sshd-monitor
 
 go 1.21.0
 

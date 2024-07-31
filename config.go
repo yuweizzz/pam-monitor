@@ -8,6 +8,7 @@ import (
 )
 
 type Configs struct {
+	PamLib	string
 	NetIface       string
 	MaxFailedCount int
 	TimeUnit       time.Duration
@@ -23,6 +24,7 @@ func ReadConfig(path string) (cfg *Configs) {
 	cfg.TimeUnit = cfg.TimeUnit * time.Second
 	cfg.ReportPeriod = cfg.ReportPeriod * time.Second
 	log.Println("Using Config:")
+	log.Printf("PamLib: %s\n", cfg.PamLib)
 	log.Printf("NetIface: %s\n", cfg.NetIface)
 	log.Printf("MaxFailedCount: %d\n", cfg.MaxFailedCount)
 	log.Printf("TimeUnit: %s\n", cfg.TimeUnit)

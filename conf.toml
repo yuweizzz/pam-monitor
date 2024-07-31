@@ -1,3 +1,5 @@
+PamLib = "/lib/x86_64-linux-gnu/libpam.so.0"
+
 # net filter
 NetIface = "enp0s3"
 MaxFailedCount = 3

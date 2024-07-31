@@ -21,7 +21,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -type event bpf xdp.c -- -I./headers
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -type event bpf ebpf.c
 
 type BlockRule struct {
 	Ip               netip.Addr
@@ -68,7 +68,7 @@ func main() {
 	}
 
 	// Uprobe PAM lib.
-	ex, err := link.OpenExecutable("/lib/x86_64-linux-gnu/libpam.so.0")
+	ex, err := link.OpenExecutable(cfg.PamLib)
 	if err != nil {
 		log.Fatalf("Opening executable: %s", err)
 	}
@@ -180,8 +180,7 @@ func main() {
 			log.Printf(
 				"Perf event value: Pid %d Comm %s, User %s Auth from %s Returns %d",
 				event.Pid, unix.ByteSliceToString(event.Comm[:]),
-				unix.ByteSliceToString(event.Username[:]),
-				ipStr, authResult,
+				username, ipStr, authResult,
 			)
 			if authResult > 0 {
 				Pd.WritePair(username, password)

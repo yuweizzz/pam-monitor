@@ -1,8 +1,9 @@
-CLANG := clang-14
-CFLAGS := "-O2 -g -Wall -Werror"
-
 CURDIR := $(shell pwd)
 HEADERS := $(CURDIR)/headers
+LINUX_HEADERS := "/usr/include/x86_64-linux-gnu/"
+
+BPF2GO_CC := clang
+BPF2GO_CFLAGS := "-O2 -g -Wall -Werror -I$(HEADERS) -I$(LINUX_HEADERS)"
 
 GOFILE := $(shell find . -name "*.go" | xargs)
 
@@ -18,10 +19,7 @@ clean:
 	find . -name "*.o" -delete
 
 generate:
-	BPF_CLANG=$(CLANG)
-	BPF_CFLAGS=$(CFLAGS)
-	BPF_HEADERS=$(HEADERS)
-	go generate  ./...
+	BPF2GO_CC=$(BPF2GO_CC) BPF2GO_CFLAGS=$(BPF2GO_CFLAGS) go generate  ./...
 
 build: clean generate
 	go build
