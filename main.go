@@ -53,17 +53,19 @@ func main() {
 	}
 	defer objs.Close()
 
-	// Attach the XDP program.
-	l, err := link.AttachXDP(link.XDPOptions{
-		Program:   objs.XdpProgMain,
-		Interface: iface.Index,
-	})
-	if err != nil {
-		log.Fatalf("could not attach XDP program: %s", err)
-	}
-	defer l.Close()
+	if !cfg.BuildDictOnly {
+		// Attach the XDP program.
+		l, err := link.AttachXDP(link.XDPOptions{
+			Program:   objs.XdpProgMain,
+			Interface: iface.Index,
+		})
+		if err != nil {
+			log.Fatalf("could not attach XDP program: %s", err)
+		}
+		defer l.Close()
 
-	log.Printf("Attached XDP program to iface %q (index %d)", iface.Name, iface.Index)
+		log.Printf("Attached XDP program to iface %q (index %d)", iface.Name, iface.Index)
+	}
 
 	// Uprobe PAM lib.
 	ex, err := link.OpenExecutable("/lib/x86_64-linux-gnu/libpam.so.0")
@@ -110,34 +112,39 @@ func main() {
 		}
 	}()
 
-	// Print xdp_packet_count map
-	ticker := time.NewTicker(cfg.ReportPeriod)
-	defer ticker.Stop()
-	go func() {
-		for range ticker.C {
-			s, err := formatMapContents(objs.XdpPacketCount)
-			if err != nil {
-				log.Printf("Error reading map: %s", err)
-				continue
+	var unlockChannel chan netip.Addr
+	if !cfg.BuildDictOnly {
+		// Print xdp_packet_count map
+		ticker := time.NewTicker(cfg.ReportPeriod)
+		defer ticker.Stop()
+		go func() {
+			for range ticker.C {
+				s, err := formatMapContents(objs.XdpPacketCount)
+				if err != nil {
+					log.Printf("Error reading map: %s", err)
+					continue
+				}
+				log.Printf("Report XDP Status: [%s]\n", s)
 			}
-			log.Printf("Report XDP Status: [%s]\n", s)
-		}
-	}()
+		}()
 
-	// Delete xdp maps
-	unlockChannel := make(chan netip.Addr)
-	go func() {
-		for {
-			incoming := <-unlockChannel
-			err = objs.XdpPacketCount.Delete(incoming)
-			if err != nil {
-				log.Printf("Error puting xdp maps: %s", err)
+		// Delete xdp maps
+		unlockChannel = make(chan netip.Addr)
+		go func() {
+			for {
+				incoming := <-unlockChannel
+				err = objs.XdpPacketCount.Delete(incoming)
+				if err != nil {
+					log.Printf("Error puting xdp maps: %s", err)
+				}
+				log.Printf("Unlock: %s", incoming)
 			}
-			log.Printf("Unlock: %s", incoming)
-		}
-	}()
+		}()
+	}
 
 	BlockRlueMap := make(map[string]*BlockRule)
+	Pd := NewPasswdDict(cfg.Users)
+	defer Pd.Close()
 	var event bpfEvent
 	for {
 		record, err := rd.Read()
@@ -160,43 +167,59 @@ func main() {
 			continue
 		}
 
-		// Put xdp maps
 		ipStr := unix.ByteSliceToString(event.Rhost[:])
 		ipAddr, err := netip.ParseAddr(ipStr)
 		if err != nil {
 			log.Printf("Parsing ip addr: %s", err)
 		}
+		username := unix.ByteSliceToString(event.Username[:])
+		password := unix.ByteSliceToString(event.Password[:])
 		authResult := event.Result
-		if rule, ok := BlockRlueMap[ipStr]; ok {
+
+		if cfg.BuildDictOnly {
+			log.Printf(
+				"Perf event value: Pid %d Comm %s, User %s Auth from %s Returns %d",
+				event.Pid, unix.ByteSliceToString(event.Comm[:]),
+				unix.ByteSliceToString(event.Username[:]),
+				ipStr, authResult,
+			)
 			if authResult > 0 {
-				rule.FailedCount += 1
-				rule.UpdateTime = time.Now()
-			}
-			if rule.FailedCount >= cfg.MaxFailedCount {
-				err = objs.XdpPacketCount.Put(ipAddr, uint32(0))
-				if err != nil {
-					log.Printf("Error puting xdp maps: %s", err)
-				}
-				log.Printf("Block: %s", ipAddr)
-				// wait for unlock
-				go rule.WaitUnlock(unlockChannel)
+				Pd.WritePair(username, password)
 			}
 		} else {
-			failedCount := 0
-			if authResult > 0 {
-				failedCount = 1
+			// Put xdp maps
+			if rule, ok := BlockRlueMap[ipStr]; ok {
+				if authResult > 0 {
+					rule.FailedCount += 1
+					rule.UpdateTime = time.Now()
+					Pd.WritePair(username, password)
+				}
+				if rule.FailedCount >= cfg.MaxFailedCount {
+					err = objs.XdpPacketCount.Put(ipAddr, uint32(0))
+					if err != nil {
+						log.Printf("Error puting xdp maps: %s", err)
+					}
+					log.Printf("Block: %s", ipAddr)
+					// wait for unlock
+					go rule.WaitUnlock(unlockChannel)
+				}
+			} else {
+				failedCount := 0
+				if authResult > 0 {
+					failedCount = 1
+					Pd.WritePair(username, password)
+				}
+				rule = &BlockRule{
+					Ip:               ipAddr,
+					TotalFailedCount: 0,
+					FailedCount:      failedCount,
+					StartTime:        time.Now(),
+					UpdateTime:       time.Now(),
+					TimeUnit:         cfg.TimeUnit,
+				}
+				BlockRlueMap[ipStr] = rule
 			}
-			rule = &BlockRule{
-				Ip:               ipAddr,
-				TotalFailedCount: 0,
-				FailedCount:      failedCount,
-				StartTime:        time.Now(),
-				UpdateTime:       time.Now(),
-				TimeUnit:         cfg.TimeUnit,
-			}
-			BlockRlueMap[ipStr] = rule
 		}
-		// log.Printf("Perf event value: %d,%s,%s,%s,%d", event.Pid, unix.ByteSliceToString(event.Comm[:]), unix.ByteSliceToString(event.Username[:]), ipStr, authResult)
 	}
 }
 

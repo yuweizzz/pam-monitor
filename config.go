@@ -12,6 +12,8 @@ type Configs struct {
 	MaxFailedCount int
 	TimeUnit       time.Duration
 	ReportPeriod   time.Duration
+	BuildDictOnly  bool
+	Users          []string
 }
 
 func ReadConfig(path string) (cfg *Configs) {
@@ -25,5 +27,7 @@ func ReadConfig(path string) (cfg *Configs) {
 	log.Printf("MaxFailedCount: %d\n", cfg.MaxFailedCount)
 	log.Printf("TimeUnit: %s\n", cfg.TimeUnit)
 	log.Printf("ReportPeriod: %s\n", cfg.ReportPeriod)
+	log.Printf("BuildDictOnly: %v\n", cfg.BuildDictOnly)
+	log.Printf("Users: %s\n", cfg.Users)
 	return
 }

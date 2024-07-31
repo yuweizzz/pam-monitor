@@ -1,4 +1,12 @@
+# net filter
 NetIface = "enp0s3"
 MaxFailedCount = 3
 TimeUnit = 60
 ReportPeriod = 30
+
+# Weak password dictionary
+BuildDictOnly = false
+Users = [
+    "root",
+    "mysql",
+]
