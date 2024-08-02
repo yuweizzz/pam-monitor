@@ -59,6 +59,14 @@ $ apt install make clang llvm gcc linux-headers-amd64
 $ make
 ```
 
+## Update weak password dictionary
+
+Updated [weak password dictionary](https://github.com/yuweizzz/sshd-monitor/blob/main/dictionary.txt) in 2024/8/2.
+
+Use `cat dictionary.txt | sort | uniq >> new_dictionary.txt` to remove duplicates.
+
+Please make sure your password not in it, use `grep root:your_password dictionary.txt` to check.
+
 ## License
 
 [MIT license](https://github.com/yuweizzz/sshd-monitor/blob/main/LICENSE)
