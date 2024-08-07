@@ -61,7 +61,7 @@ $ make
 
 ## Update weak password dictionary
 
-Updated [weak password dictionary](https://github.com/yuweizzz/sshd-monitor/blob/main/dictionary.txt) in 2024/8/2.
+Updated [weak password dictionary](https://github.com/yuweizzz/sshd-monitor/blob/main/dictionary.txt) in 2024/8/7.
 
 Use `cat dictionary.txt | sort | uniq >> new_dictionary.txt` to remove duplicates.
 
