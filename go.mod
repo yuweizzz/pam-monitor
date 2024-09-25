@@ -1,4 +1,4 @@
-module github.com/yuweizzz/sshd-monitor
+module github.com/yuweizzz/pam-monitor
 
 go 1.21.0
 

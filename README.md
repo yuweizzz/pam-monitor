@@ -1,4 +1,4 @@
-# sshd-monitor
+# pam-monitor
 
 An eBPF-based tool to deny network packets and collect weak passwords.
 
@@ -8,13 +8,13 @@ Use for learning eBPF.
 
 ``` bash
 # Usage
-$ ./sshd-monitor -h
-Usage of ./sshd-monitor:
+$ ./pam-monitor -h
+Usage of ./pam-monitor:
   -c string
     	config file (default "conf.toml")
 
 # Run
-$ ./sshd-monitor -c conf.toml
+$ ./pam-monitor -c conf.toml
 ```
 
 `conf.toml`:
@@ -61,7 +61,7 @@ $ make
 
 ## Update weak password dictionary
 
-Updated [weak password dictionary](https://github.com/yuweizzz/sshd-monitor/blob/main/dictionary.txt) in 2024/9/23.
+Updated [weak password dictionary](https://github.com/yuweizzz/pam-monitor/blob/main/dictionary.txt) in 2024/9/23.
 
 Use `cat dictionary.txt | sort | uniq >> new_dictionary.txt` to remove duplicates.
 
@@ -69,4 +69,4 @@ Please make sure your password not in it, use `grep root:your_password dictionar
 
 ## License
 
-[MIT license](https://github.com/yuweizzz/sshd-monitor/blob/main/LICENSE)
+[MIT license](https://github.com/yuweizzz/pam-monitor/blob/main/LICENSE)
