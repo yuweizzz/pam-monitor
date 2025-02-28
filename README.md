@@ -61,7 +61,7 @@ $ make
 
 ## Update weak password dictionary
 
-Updated [weak password dictionary](https://github.com/yuweizzz/pam-monitor/blob/main/dictionary.txt) in 2024/9/23.
+Updated [weak password dictionary](https://github.com/yuweizzz/pam-monitor/blob/main/dictionary.txt) in 2025/2/28.
 
 Use `cat dictionary.txt | sort | uniq >> new_dictionary.txt` to remove duplicates.
 
